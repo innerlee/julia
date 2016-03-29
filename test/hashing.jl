@@ -104,3 +104,19 @@ let a = Expr(:block, SymbolNode(:a, Any)),
 end
 
 @test hash(Dict(),hash(Set())) != hash(Set(),hash(Dict()))
+
+# issue 15659
+for prec in [3, 11, 15, 16, 31, 32, 33, 63, 64, 65, 254, 255, 256, 257, 258, 1023, 1024, 1025],
+    x in Any[-0.0, 0, 1, -1, 1//10, 2//10, 3//10, 1//2, pi]
+    setprecision(prec) do
+        X = convert(BigFloat, x)
+        @test precision(X) == prec
+        num, pow, den = Base.decompose(X)
+        Y = num*big(2.0)^pow/den
+        @test precision(Y) == prec
+        @test isequal(X, Y)
+    end
+end
+
+# seems unrelated to hashing but depends on Base.decompose (also issue 15659)
+@test (setprecision(53) do; big(1/3); end) < 1//3
