@@ -5,7 +5,7 @@ LLVM for Julia.
 
 ## Overview of Julia to LLVM Interface
 
-Julia statically links in LLVM by default. Build with `USE_LLVM_SHLIB=1` to link dynamically.
+Julia dynamically links against LLVM by default. Build with `USE_LLVM_SHLIB=0` to link statically.
 
 The code for lowering Julia AST to LLVM IR or interpreting it directly is in directory `src/`.
 
@@ -48,17 +48,22 @@ LLVM_VER = 3.5.0
 Besides the LLVM release numerals, you can also use `LLVM_VER = svn` to bulid against the latest
 development version of LLVM.
 
+You can also specify to build a debug version of LLVM, by setting either `LLVM_DEBUG = 1` or
+`LLVM_DEBUG = Release` in your `Make.user` file. The former will be a fully unoptimized build
+of LLVM and the latter will produce an optimized build of LLVM. Depending on your needs the
+latter will suffice and it quite a bit faster. If you use `LLVM_DEBUG = Release` you will also
+want to set `LLVM_ASSERTIONS = 1` to enable diagonstics for different passes. Only `LLVM_DEBUG = 1`
+implies that option by default.
+
 ## Passing options to LLVM
 
-You can pass options to LLVM using *debug* builds of Julia. To create a debug build, run `make debug`.
-The resulting executable is `usr/bin/julia-debug`. You can pass LLVM options to this executable
-via the environment variable `JULIA_LLVM_ARGS`. Here are example settings using `bash` syntax:
+You can pass options to LLVM via the environment variable `JULIA_LLVM_ARGS`.
+Here are example settings using `bash` syntax:
 
   * `export JULIA_LLVM_ARGS = -print-after-all` dumps IR after each pass.
   * `export JULIA_LLVM_ARGS = -debug-only=loop-vectorize` dumps LLVM `DEBUG(...)` diagnostics for
-    loop vectorizer *if* you built Julia with `LLVM_ASSERTIONS=1`. Otherwise you will get warnings
-    about "Unknown command line argument". Counter-intuitively, building Julia with `LLVM_DEBUG=1`
-    is *not* enough to dump `DEBUG` diagnostics from a pass.
+    loop vectorizer. If you get warnings about "Unknown command line argument", rebuild LLVM with
+    `LLVM_ASSERTIONS = 1`.
 
 ## Debugging LLVM transformations in isolation
 
@@ -259,14 +264,14 @@ One important aspect missing from the discussion so far is the handling of
 do not coincide. As an example consider:
 ```julia
 A = randn(1024)
-ccall(:foo, Void, (Ptr{Float64},), A)
+ccall(:foo, Cvoid, (Ptr{Float64},), A)
 ```
 In lowering, the compiler will insert a conversion from the array to the
 pointer which drops the reference to the array value. However, we of course
 need to make sure that the array does stay alive while we're doing the `ccall`.
 To understand how this is done, first recall the lowering of the above code:
 ```julia
-return $(Expr(:foreigncall, :(:foo), Void, svec(Ptr{Float64}), :(:ccall), 1, :($(Expr(:foreigncall, :(:jl_array_ptr), Ptr{Float64}, svec(Any), :(:ccall), 1, :(A)))), :(A)))
+return $(Expr(:foreigncall, :(:foo), Cvoid, svec(Ptr{Float64}), :(:ccall), 1, :($(Expr(:foreigncall, :(:jl_array_ptr), Ptr{Float64}, svec(Any), :(:ccall), 1, :(A)))), :(A)))
 ```
 The last `:(A)`, is an extra argument list inserted during lowering that informs
 the code generator which Julia level values need to be kept alive for the

@@ -21,22 +21,12 @@ const ARGS = String[]
 """
     exit(code=0)
 
-Quit the program with an exit code. The default exit code is zero, indicating that the
-program completed successfully (see also [`quit`](@ref)). In an interactive session,
-`exit()` can be called with the keyboard shorcut `^D`.
-
+Stop the program with an exit code. The default exit code is zero, indicating that the
+program completed successfully. In an interactive session, `exit()` can be called with
+the keyboard shortcut `^D`.
 """
-exit(n) = ccall(:jl_exit, Void, (Int32,), n)
+exit(n) = ccall(:jl_exit, Cvoid, (Int32,), n)
 exit() = exit(0)
-
-"""
-    quit()
-
-Quit the program indicating successful completion. This function is equivalent to
-`exit(0)` (see [`exit`](@ref)). In an interactive session, `quit()` can be called
-with the keyboard shorcut `^D`.
-"""
-quit() = exit()
 
 const roottask = current_task()
 
@@ -49,53 +39,90 @@ Determine whether Julia is running an interactive session.
 """
 isinteractive() = (is_interactive::Bool)
 
+## package depots (registries, packages, environments) ##
+
+const DEPOT_PATH = String[]
+
+function init_depot_path(BINDIR::String = Sys.BINDIR)
+    if haskey(ENV, "JULIA_DEPOT_PATH")
+        depots = split(ENV["JULIA_DEPOT_PATH"], Sys.iswindows() ? ';' : ':')
+        append!(empty!(DEPOT_PATH), map(expanduser, depots))
+    else
+        push!(empty!(DEPOT_PATH), joinpath(homedir(), ".julia"))
+        push!(DEPOT_PATH, abspath(BINDIR, "..", "local", "share", "julia"))
+        push!(DEPOT_PATH, abspath(BINDIR, "..", "share", "julia"))
+    end
+end
+
+## LOAD_PATH ##
+
+# split on `:` (or `;` on Windows)
+# first empty entry is replaced with DEFAULT_LOAD_PATH, the rest are skipped
+# entries starting with `@` are named environments:
+#  - the first three `#`s in a named environment are replaced with version numbers
+#  - `@stdlib` is a special name for the standard library and expands to its path
+
+# if you want a current env setup, use direnv and
+# have your .envrc do something like this:
+#
+#   export JULIA_LOAD_PATH="$(pwd):$JULIA_LOAD_PATH"
+#
+# this will inherit an existing JULIA_LOAD_PATH value or if there is none, leave
+# a trailing empty entry in JULIA_LOAD_PATH which will be replaced with defaults.
+
+const DEFAULT_LOAD_PATH = ["@v#.#", "@stdlib"]
+
 """
     LOAD_PATH
 
-An array of paths as strings or custom loader objects for the `require`
-function and `using` and `import` statements to consider when loading
-code. To create a custom loader type, define the type and then add
-appropriate methods to the `Base.load_hook` function with the following
-signature:
-
-    Base.load_hook(loader::Loader, name::String, found::Any)
-
-The `loader` argument is the current value in `LOAD_PATH`, `name` is the
-name of the module to load, and `found` is the path of any previously
-found code to provide `name`. If no provider has been found earlier in
-`LOAD_PATH` then the value of `found` will be `nothing`. Custom loader
-functionality is experimental and may break or change in Julia 1.0.
+An array of paths for `using` and `import` statements to consdier as project
+environments or package directories when loading code. See Code Loading.
 """
-const LOAD_PATH = Any[]
-const LOAD_CACHE_PATH = String[]
+const LOAD_PATH = copy(DEFAULT_LOAD_PATH)
 
-function init_load_path(JULIA_HOME = JULIA_HOME)
-    vers = "v$(VERSION.major).$(VERSION.minor)"
-    if haskey(ENV, "JULIA_LOAD_PATH")
-        prepend!(LOAD_PATH, split(ENV["JULIA_LOAD_PATH"], @static Sys.iswindows() ? ';' : ':'))
-    end
-    push!(LOAD_PATH, abspath(JULIA_HOME, "..", "local", "share", "julia", "site", vers))
-    push!(LOAD_PATH, abspath(JULIA_HOME, "..", "share", "julia", "site", vers))
-    #push!(LOAD_CACHE_PATH, abspath(JULIA_HOME, "..", "lib", "julia")) #TODO: add a builtin location?
-end
-
-function early_init()
-    global const JULIA_HOME = ccall(:jl_get_julia_home, Any, ())
-    # make sure OpenBLAS does not set CPU affinity (#1070, #9639)
-    ENV["OPENBLAS_MAIN_FREE"] = get(ENV, "OPENBLAS_MAIN_FREE",
-                                    get(ENV, "GOTOBLAS_MAIN_FREE", "1"))
-    if Sys.CPU_CORES > 8 && !("OPENBLAS_NUM_THREADS" in keys(ENV)) && !("OMP_NUM_THREADS" in keys(ENV))
-        # Prevent openblas from starting too many threads, unless/until specifically requested
-        ENV["OPENBLAS_NUM_THREADS"] = 8
+function current_env(dir::AbstractString = pwd())
+    # look for project file in current dir and parents
+    home = homedir()
+    while true
+        for proj in project_names
+            file = joinpath(dir, proj)
+            isfile_casesensitive(file) && return file
+        end
+        # bail at home directory or top of git repo
+        (dir == home || ispath(joinpath(dir, ".git"))) && break
+        old, dir = dir, dirname(dir)
+        dir == old && break
     end
 end
 
-"""
-    JULIA_HOME
+function parse_load_path(str::String)
+    envs = String[]
+    isempty(str) && return envs
+    first_empty = true
+    for env in split(str, Sys.iswindows() ? ';' : ':')
+        if isempty(env)
+            first_empty && append!(envs, DEFAULT_LOAD_PATH)
+            first_empty = false
+        elseif env == "@"
+            dir = current_env()
+            dir !== nothing && push!(envs, dir)
+        else
+            push!(envs, env)
+        end
+    end
+    return envs
+end
 
-A string containing the full path to the directory containing the `julia` executable.
-"""
-:JULIA_HOME
+function init_load_path(BINDIR::String = Sys.BINDIR)
+    if Base.creating_sysimg
+        load_path = ["@stdlib"]
+    elseif haskey(ENV, "JULIA_LOAD_PATH")
+        load_path = parse_load_path(ENV["JULIA_LOAD_PATH"])
+    else
+        load_path = DEFAULT_LOAD_PATH
+    end
+    append!(empty!(LOAD_PATH), load_path)
+end
 
 const atexit_hooks = []
 
@@ -105,15 +132,15 @@ const atexit_hooks = []
 Register a zero-argument function `f()` to be called at process exit. `atexit()` hooks are
 called in last in first out (LIFO) order and run before object finalizers.
 """
-atexit(f::Function) = (unshift!(atexit_hooks, f); nothing)
+atexit(f::Function) = (pushfirst!(atexit_hooks, f); nothing)
 
 function _atexit()
     for f in atexit_hooks
         try
             f()
         catch err
-            show(STDERR, err)
-            println(STDERR)
+            show(stderr, err)
+            println(stderr)
         end
     end
 end

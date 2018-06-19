@@ -1,9 +1,7 @@
 # Unit Testing
 
 ```@meta
-DocTestSetup = quote
-    using Test
-end
+DocTestSetup = :(using Test)
 ```
 
 ## Testing Base Julia
@@ -53,7 +51,7 @@ If the condition is false, then a `Fail` is returned and an exception is thrown:
 
 ```jldoctest testfoo
 julia> @test foo("f") == 20
-Test Failed
+Test Failed at none:1
   Expression: foo("f") == 20
    Evaluated: 1 == 20
 ERROR: There was an error during testing
@@ -75,7 +73,7 @@ Error During Test
     length(::MethodTable) at reflection.jl:597
     ...
   Stacktrace:
-   [...]
+  [...]
 ERROR: There was an error during testing
 ```
 
@@ -125,7 +123,7 @@ julia> @testset "Foo Tests" begin
            end
            @testset "Arrays $i" for i in 1:3
                @test foo(zeros(i)) == i^2
-               @test foo(ones(i)) == i^2
+               @test foo(fill(1.0, i)) == i^2
            end
        end;
 Test Summary: | Pass  Total
@@ -147,15 +145,14 @@ julia> @testset "Foo Tests" begin
            end
            @testset "Arrays" begin
                @test foo(zeros(2)) == 4
-               @test foo(ones(4)) == 15
+               @test foo(fill(1.0, 4)) == 15
            end
        end
 
 Arrays: Test Failed
-  Expression: foo(ones(4)) == 15
+  Expression: foo(fill(1.0, 4)) == 15
    Evaluated: 16 == 15
-Stacktrace:
-    [...]
+[...]
 Test Summary: | Pass  Fail  Total
 Foo Tests     |    3     1      4
   Animals     |    2            2
@@ -174,7 +171,7 @@ julia> @test 1 ≈ 0.999999999
 Test Passed
 
 julia> @test 1 ≈ 0.999999
-Test Failed
+Test Failed at none:1
   Expression: 1 ≈ 0.999999
    Evaluated: 1 ≈ 0.999999
 ERROR: There was an error during testing
@@ -182,6 +179,8 @@ ERROR: There was an error during testing
 
 ```@docs
 Test.@inferred
+Test.@test_logs
+Test.@test_deprecated
 Test.@test_warn
 Test.@test_nowarn
 ```

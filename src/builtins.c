@@ -36,10 +36,11 @@ static int bits_equal(void *a, void *b, int sz)
 {
     switch (sz) {
     case 1:  return *(int8_t*)a == *(int8_t*)b;
-    case 2:  return *(int16_t*)a == *(int16_t*)b;
-    case 4:  return *(int32_t*)a == *(int32_t*)b;
-    case 8:  return *(int64_t*)a == *(int64_t*)b;
-    default: return memcmp(a, b, sz)==0;
+        // Let compiler constant folds the following.
+    case 2:  return memcmp(a, b, 2) == 0;
+    case 4:  return memcmp(a, b, 4) == 0;
+    case 8:  return memcmp(a, b, 8) == 0;
+    default: return memcmp(a, b, sz) == 0;
     }
 }
 
@@ -102,7 +103,7 @@ static int NOINLINE compare_fields(jl_value_t *a, jl_value_t *b, jl_datatype_t *
                 ft = (jl_datatype_t*)jl_nth_union_component((jl_value_t*)ft, asel);
             }
             if (!ft->layout->haspadding) {
-                if (!bits_equal(ao, bo, jl_field_size(dt, f)))
+                if (!bits_equal(ao, bo, ft->size))
                     return 0;
             }
             else {
@@ -198,22 +199,22 @@ JL_DLLEXPORT int jl_egal(jl_value_t *a, jl_value_t *b)
 
 // object_id ------------------------------------------------------------------
 
-static uintptr_t bits_hash(void *b, size_t sz)
+static uintptr_t bits_hash(const void *b, size_t sz)
 {
     switch (sz) {
-    case 1:  return int32hash(*(int8_t*)b);
-    case 2:  return int32hash(*(int16_t*)b);
-    case 4:  return int32hash(*(int32_t*)b);
+    case 1:  return int32hash(*(const int8_t*)b);
+    case 2:  return int32hash(jl_load_unaligned_i16(b));
+    case 4:  return int32hash(jl_load_unaligned_i32(b));
 #ifdef _P64
-    case 8:  return int64hash(*(int64_t*)b);
+    case 8:  return int64hash(jl_load_unaligned_i64(b));
 #else
-    case 8:  return int64to32hash(*(int64_t*)b);
+    case 8:  return int64to32hash(jl_load_unaligned_i64(b));
 #endif
     default:
 #ifdef _P64
-        return memhash((char*)b, sz);
+        return memhash((const char*)b, sz);
 #else
-        return memhash32((char*)b, sz);
+        return memhash32((const char*)b, sz);
 #endif
     }
 }
@@ -336,7 +337,7 @@ static uintptr_t jl_object_id_(jl_value_t *tv, jl_value_t *v)
             if (fieldtype->layout->haspadding)
                 u = jl_object_id_((jl_value_t*)fieldtype, (jl_value_t*)vo);
             else
-                u = bits_hash(vo, jl_field_size(dt, f));
+                u = bits_hash(vo, fieldtype->size);
         }
         h = bitmix(h, u);
     }
@@ -408,8 +409,6 @@ JL_CALLABLE(jl_f_issubtype)
 {
     JL_NARGS(<:, 2, 2);
     jl_value_t *a = args[0], *b = args[1];
-    if (jl_is_typevar(a)) a = ((jl_tvar_t*)a)->ub; // TODO should we still allow this?
-    if (jl_is_typevar(b)) b = ((jl_tvar_t*)b)->ub;
     JL_TYPECHK(<:, type, a);
     JL_TYPECHK(<:, type, b);
     return (jl_subtype(a,b) ? jl_true : jl_false);
@@ -436,6 +435,13 @@ JL_CALLABLE(jl_f_throw)
     JL_NARGS(throw, 1, 1);
     jl_throw(args[0]);
     return jl_nothing;
+}
+
+JL_CALLABLE(jl_f_ifelse)
+{
+    JL_NARGS(ifelse, 3, 3);
+    JL_TYPECHK(ifelse, bool, args[0]);
+    return (args[0] == jl_false ? args[2] : args[1]);
 }
 
 // apply ----------------------------------------------------------------------
@@ -643,9 +649,6 @@ JL_CALLABLE(jl_f_isdefined)
     jl_module_t *m = NULL;
     jl_sym_t *s = NULL;
     JL_NARGSV(isdefined, 1);
-    if (jl_is_array(args[0])) {
-        return jl_array_isdefined(args, nargs) ? jl_true : jl_false;
-    }
     if (nargs == 1) {
         JL_TYPECHK(isdefined, symbol, args[0]);
         s = (jl_sym_t*)args[0];
@@ -795,9 +798,19 @@ static jl_value_t *get_fieldtype(jl_value_t *t, jl_value_t *f)
         JL_GC_POP();
         return u;
     }
+    if (jl_is_uniontype(t)) {
+        jl_value_t **u;
+        jl_value_t *r;
+        JL_GC_PUSHARGS(u, 2);
+        u[0] = get_fieldtype(((jl_uniontype_t*)t)->a, f);
+        u[1] = get_fieldtype(((jl_uniontype_t*)t)->b, f);
+        r = jl_type_union(u, 2);
+        JL_GC_POP();
+        return r;
+    }
+    if (!jl_is_datatype(t))
+        jl_type_error("fieldtype", (jl_value_t*)jl_datatype_type, t);
     jl_datatype_t *st = (jl_datatype_t*)t;
-    if (!jl_is_datatype(st))
-        jl_type_error("fieldtype", (jl_value_t*)jl_datatype_type, (jl_value_t*)st);
     int field_index;
     if (jl_is_long(f)) {
         field_index = jl_unbox_long(f) - 1;
@@ -905,12 +918,6 @@ JL_CALLABLE(jl_f_apply_type)
 
 // generic function reflection ------------------------------------------------
 
-static void jl_check_type_tuple(jl_value_t *t, jl_sym_t *name, const char *ctx)
-{
-    if (!jl_is_tuple_type(t))
-        jl_type_error_rt(jl_symbol_name(name), ctx, (jl_value_t*)jl_type_type, t);
-}
-
 JL_CALLABLE(jl_f_applicable)
 {
     JL_NARGSV(applicable, 1);
@@ -924,20 +931,12 @@ JL_CALLABLE(jl_f_invoke)
     JL_NARGSV(invoke, 2);
     jl_value_t *argtypes = args[1];
     JL_GC_PUSH1(&argtypes);
-    if (jl_is_tuple(args[1])) {
-        jl_depwarn("`invoke(f, (types...), ...)` is deprecated, "
-                   "use `invoke(f, Tuple{types...}, ...)` instead",
-                   (jl_value_t*)jl_symbol("invoke"));
-        argtypes = (jl_value_t*)jl_apply_tuple_type_v((jl_value_t**)jl_data_ptr(argtypes),
-                                                      jl_nfields(argtypes));
-    }
-    else {
-        jl_check_type_tuple(args[1], jl_gf_name(args[0]), "invoke");
-    }
+    if (!jl_is_tuple_type(jl_unwrap_unionall(args[1])))
+        jl_type_error_rt(jl_symbol_name(jl_gf_name(args[0])), "invoke", (jl_value_t*)jl_type_type, args[1]);
     if (!jl_tuple_isa(&args[2], nargs-2, (jl_datatype_t*)argtypes))
         jl_error("invoke: argument type error");
     args[1] = args[0];  // move function directly in front of arguments
-    jl_value_t *res = jl_gf_invoke((jl_tupletype_t*)argtypes, &args[1], nargs-1);
+    jl_value_t *res = jl_gf_invoke(argtypes, &args[1], nargs-1);
     JL_GC_POP();
     return res;
 }
@@ -961,12 +960,12 @@ JL_CALLABLE(jl_f_invoke_kwsorter)
                                                       jl_nfields(argtypes));
     }
     if (jl_is_tuple_type(argtypes)) {
-        // construct a tuple type for invoking a keyword sorter by putting `Vector{Any}`
+        // construct a tuple type for invoking a keyword sorter by putting the kw container type
         // and the type of the function at the front.
         size_t i, nt = jl_nparams(argtypes) + 2;
         if (nt < jl_page_size/sizeof(jl_value_t*)) {
             jl_value_t **types = (jl_value_t**)alloca(nt*sizeof(jl_value_t*));
-            types[0] = jl_array_any_type; types[1] = jl_typeof(func);
+            types[0] = (jl_value_t*)jl_namedtuple_type; types[1] = jl_typeof(func);
             for(i=2; i < nt; i++)
                 types[i] = jl_tparam(argtypes,i-2);
             argtypes = (jl_value_t*)jl_apply_tuple_type_v(types, nt);
@@ -1005,7 +1004,6 @@ jl_expr_t *jl_exprn(jl_sym_t *head, size_t n)
                                             jl_expr_type);
     ex->head = head;
     ex->args = ar;
-    ex->etype = (jl_value_t*)jl_any_type;
     JL_GC_POP();
     return ex;
 }
@@ -1023,7 +1021,6 @@ JL_CALLABLE(jl_f__expr)
                                             jl_expr_type);
     ex->head = (jl_sym_t*)args[0];
     ex->args = ar;
-    ex->etype = (jl_value_t*)jl_any_type;
     JL_GC_POP();
     return (jl_value_t*)ex;
 }
@@ -1197,13 +1194,13 @@ static void add_builtin(const char *name, jl_value_t *v)
     jl_set_const(jl_core_module, jl_symbol(name), v);
 }
 
-jl_fptr_t jl_get_builtin_fptr(jl_value_t *b)
+jl_fptr_args_t jl_get_builtin_fptr(jl_value_t *b)
 {
     assert(jl_isa(b, (jl_value_t*)jl_builtin_type));
-    return jl_gf_mtable(b)->cache.leaf->func.linfo->fptr;
+    return jl_gf_mtable(b)->cache.leaf->func.linfo->specptr.fptr1;
 }
 
-static void add_builtin_func(const char *name, jl_fptr_t fptr)
+static void add_builtin_func(const char *name, jl_fptr_args_t fptr)
 {
     jl_mk_builtin_func(NULL, name, fptr);
 }
@@ -1218,6 +1215,7 @@ void jl_init_primitives(void)
     add_builtin_func("typeassert", jl_f_typeassert);
     add_builtin_func("throw", jl_f_throw);
     add_builtin_func("tuple", jl_f_tuple);
+    add_builtin_func("ifelse", jl_f_ifelse);
 
     // field access
     add_builtin_func("getfield",  jl_f_getfield);
@@ -1252,7 +1250,7 @@ void jl_init_primitives(void)
     // builtin types
     add_builtin("Any", (jl_value_t*)jl_any_type);
     add_builtin("Type", (jl_value_t*)jl_type_type);
-    add_builtin("Void", (jl_value_t*)jl_void_type);
+    add_builtin("Nothing", (jl_value_t*)jl_void_type);
     add_builtin("nothing", (jl_value_t*)jl_nothing);
     add_builtin("TypeName", (jl_value_t*)jl_typename_type);
     add_builtin("DataType", (jl_value_t*)jl_datatype_type);
@@ -1289,11 +1287,16 @@ void jl_init_primitives(void)
 
     add_builtin("Expr", (jl_value_t*)jl_expr_type);
     add_builtin("LineNumberNode", (jl_value_t*)jl_linenumbernode_type);
-    add_builtin("LabelNode", (jl_value_t*)jl_labelnode_type);
+    add_builtin("LineInfoNode", (jl_value_t*)jl_lineinfonode_type);
     add_builtin("GotoNode", (jl_value_t*)jl_gotonode_type);
+    add_builtin("PiNode", (jl_value_t*)jl_pinode_type);
+    add_builtin("PhiNode", (jl_value_t*)jl_phinode_type);
+    add_builtin("PhiCNode", (jl_value_t*)jl_phicnode_type);
+    add_builtin("UpsilonNode", (jl_value_t*)jl_upsilonnode_type);
     add_builtin("QuoteNode", (jl_value_t*)jl_quotenode_type);
     add_builtin("NewvarNode", (jl_value_t*)jl_newvarnode_type);
     add_builtin("GlobalRef", (jl_value_t*)jl_globalref_type);
+    add_builtin("NamedTuple", (jl_value_t*)jl_namedtuple_type);
 
     add_builtin("Bool", (jl_value_t*)jl_bool_type);
     add_builtin("UInt8", (jl_value_t*)jl_uint8_type);

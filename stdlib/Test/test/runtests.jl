@@ -1,27 +1,31 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
-using Test
+using Test, Distributed, Random
 
-# Test @test
-@test true
-@test 1 == 1
-@test 1 != 2
-@test ==(1, 1)
-@test ==((1, 1)...)
-@test 1 ≈ 2 atol=1
-@test strip("\t  hi   \n") == "hi"
-@test strip("\t  this should fail   \n") != "hi"
-@test isequal(1, 1)
-@test isapprox(1, 1, atol=0.1)
-@test isapprox(1, 1; atol=0.1)
-@test isapprox(1, 1; [(:atol, 0)]...)
+import Logging: Debug, Info, Warn
 
-# @test keyword precedence: post-semicolon keyword, suffix keyword, pre-semicolon keyword
-@test isapprox(1, 2, atol=0) atol=1
-@test isapprox(1, 3, atol=0; atol=2) atol=1
-
-# @test should only evaluate the arguments once
-let g = Int[], f = (x) -> (push!(g, x); x)
+@testset "@test" begin
+    @test true
+    @test 1 == 1
+    @test 1 != 2
+    @test ==(1, 1)
+    @test ==((1, 1)...)
+    @test 1 ≈ 2 atol=1
+    @test strip("\t  hi   \n") == "hi"
+    @test strip("\t  this should fail   \n") != "hi"
+    @test isequal(1, 1)
+    @test isapprox(1, 1, atol=0.1)
+    @test isapprox(1, 1; atol=0.1)
+    @test isapprox(1, 1; [(:atol, 0)]...)
+end
+@testset "@test keyword precedence" begin
+    # post-semicolon keyword, suffix keyword, pre-semicolon keyword
+    @test isapprox(1, 2, atol=0) atol=1
+    @test isapprox(1, 3, atol=0; atol=2) atol=1
+end
+@testset "@test should only evaluate the arguments once" begin
+    g = Int[]
+    f = (x) -> (push!(g, x); x)
     @test f(1) == 1
     @test g == [1]
 
@@ -30,32 +34,34 @@ let g = Int[], f = (x) -> (push!(g, x); x)
     @test g == [2]
 end
 
-# Test @test_broken with fail
-@test_broken false
-@test_broken 1 == 2
-@test_broken 1 != 1
-@test_broken strip("\t  hi   \n") != "hi"
-@test_broken strip("\t  this should fail   \n") == "hi"
-# Test @test_broken with errors
-@test_broken error()
-@test_broken absolute_nonsense
-
-#Test @test_skip
-@test_skip error()
-@test_skip true
-@test_skip false
-@test_skip gobbeldygook
-
-# Test @test_warn
-@test 1234 === @test_nowarn(1234)
-@test 5678 === @test_warn("WARNING: foo", begin warn("foo"); 5678; end)
-let a
-    @test_throws UndefVarError(:a) a
-    @test_nowarn a = 1
-    @test a === 1
+@testset "@test_broken with fail" begin
+    @test_broken false
+    @test_broken 1 == 2
+    @test_broken 1 != 1
+    @test_broken strip("\t  hi   \n") != "hi"
+    @test_broken strip("\t  this should fail   \n") == "hi"
 end
-
-let a = Array{Float64, 5}(2, 2, 2, 2, 2)
+@testset "@test_broken with errors" begin
+    @test_broken error()
+    @test_broken absolute_nonsense
+end
+@testset "@test_skip" begin
+    @test_skip error()
+    @test_skip true
+    @test_skip false
+    @test_skip gobbeldygook
+end
+@testset "@test_warn" begin
+    @test 1234 === @test_nowarn(1234)
+    @test 5678 === @test_warn("WARNING: foo", begin println(stderr, "WARNING: foo"); 5678; end)
+    let a
+        @test_throws UndefVarError(:a) a
+        @test_nowarn a = 1
+        @test a === 1
+    end
+end
+@testset "@test and elements of an array" begin
+    a = Array{Float64, 5}(undef, 2, 2, 2, 2, 2)
     a[1, 1, 1, 1, 1] = 10
     @test a[1, 1, 1, 1, 1] == 10
     @test a[1, 1, 1, 1, 1] != 2
@@ -63,12 +69,12 @@ end
 
 @test rand() != rand()
 
-# Pass - exception
-@test endswith(sprint(show, @test_throws ErrorException error()),
-               "Thrown: ErrorException")
-@test endswith(sprint(show, @test_throws ErrorException("test") error("test")),
-               "Thrown: ErrorException")
-
+@testset "Pass - exception" begin
+    @test endswith(sprint(show, @test_throws ErrorException error()),
+                   "Thrown: ErrorException")
+    @test endswith(sprint(show, @test_throws ErrorException("test") error("test")),
+                   "Thrown: ErrorException")
+end
 # Test printing of Fail results
 mutable struct NoThrowTestSet <: Test.AbstractTestSet
     results::Vector
@@ -113,93 +119,93 @@ let fails = @testset NoThrowTestSet begin
     end
 
     let str = sprint(show, fails[1])
-        @test contains(str, "Expression: error()")
-        @test contains(str, "Thrown: ErrorException")
+        @test occursin("Expression: error()", str)
+        @test occursin("Thrown: ErrorException", str)
     end
 
     let str = sprint(show, fails[2])
-        @test contains(str, "Expression: 1 + 1")
-        @test contains(str, "No exception thrown")
+        @test occursin("Expression: 1 + 1", str)
+        @test occursin("No exception thrown", str)
     end
 
     let str = sprint(show, fails[3])
-        @test contains(str, "Expression: 1 + 1 == 2 + 2")
-        @test contains(str, "Evaluated: 2 == 4")
+        @test occursin("Expression: 1 + 1 == 2 + 2", str)
+        @test occursin("Evaluated: 2 == 4", str)
     end
 
     let str = sprint(show, fails[4])
-        @test contains(str, "Expression: 1 / 1 ≈ 2 / 1")
-        @test contains(str, "Evaluated: 1.0 ≈ 2.0")
+        @test occursin("Expression: 1 / 1 ≈ 2 / 1", str)
+        @test occursin("Evaluated: 1.0 ≈ 2.0", str)
     end
 
     let str = sprint(show, fails[5])
-        @test contains(str, "Expression: 1 + 0 == 2 + 0 == 3 + 0")
-        @test contains(str, "Evaluated: 1 == 2 == 3")
+        @test occursin("Expression: 1 + 0 == 2 + 0 == 3 + 0", str)
+        @test occursin("Evaluated: 1 == 2 == 3", str)
     end
 
     let str = sprint(show, fails[6])
-        @test contains(str, "Expression: 1 - 2 == 2 - 1")
-        @test contains(str, "Evaluated: -1 == 1")
+        @test occursin("Expression: 1 - 2 == 2 - 1", str)
+        @test occursin("Evaluated: -1 == 1", str)
     end
 
     let str = sprint(show, fails[7])
-        @test contains(str, "Expression: (==)(1:2...)")
-        @test !contains(str, "Evaluated")
+        @test occursin("Expression: (==)(1:2...)", str)
+        @test !occursin("Evaluated", str)
     end
 
     let str = sprint(show, fails[8])
-        @test contains(str, "Expression: isequal(0 / 0, 1 / 0)")
-        @test contains(str, "Evaluated: isequal(NaN, Inf)")
+        @test occursin("Expression: isequal(0 / 0, 1 / 0)", str)
+        @test occursin("Evaluated: isequal(NaN, Inf)", str)
     end
 
     let str = sprint(show, fails[9])
-        @test contains(str, "Expression: isequal(1:2...)")
-        @test contains(str, "Evaluated: isequal(1, 2)")
+        @test occursin("Expression: isequal(1:2...)", str)
+        @test occursin("Evaluated: isequal(1, 2)", str)
     end
 
     let str = sprint(show, fails[10])
-        @test contains(str, "Expression: isapprox(0 / 1, -1 / 0)")
-        @test contains(str, "Evaluated: isapprox(0.0, -Inf)")
+        @test occursin("Expression: isapprox(0 / 1, -1 / 0)", str)
+        @test occursin("Evaluated: isapprox(0.0, -Inf)", str)
     end
 
     let str = sprint(show, fails[11])
-        @test contains(str, "Expression: isapprox(1 / 2, 2 / 1, atol=1 / 1)")
-        @test contains(str, "Evaluated: isapprox(0.5, 2.0; atol=1.0)")
+        @test occursin("Expression: isapprox(1 / 2, 2 / 1, atol=1 / 1)", str)
+        @test occursin("Evaluated: isapprox(0.5, 2.0; atol=1.0)", str)
     end
 
     let str = sprint(show, fails[12])
-        @test contains(str, "Expression: isapprox(1 - 2, 2 - 1; atol=1 - 1)")
-        @test contains(str, "Evaluated: isapprox(-1, 1; atol=0)")
+        @test occursin("Expression: isapprox(1 - 2, 2 - 1; atol=1 - 1)", str)
+        @test occursin("Evaluated: isapprox(-1, 1; atol=0)", str)
     end
 
     let str = sprint(show, fails[13])
-        @test contains(str, "Expression: isapprox(1, 2; k...)")
-        @test contains(str, "Evaluated: isapprox(1, 2; atol=0, nans=true)")
+        @test occursin("Expression: isapprox(1, 2; k...)", str)
+        @test occursin("Evaluated: isapprox(1, 2; atol=0, nans=true)", str)
     end
 
     let str = sprint(show, fails[14])
-        @test contains(str, "Unexpected Pass")
-        @test contains(str, "Expression: true")
+        @test occursin("Unexpected Pass", str)
+        @test occursin("Expression: true", str)
     end
 
     let str = sprint(show, fails[15])
-        @test contains(str, "Expression: ==(1, 1:2...)")
-        @test contains(str, "MethodError: no method matching ==(::$Int, ::$Int, ::$Int)")
+        @test occursin("Expression: ==(1, 1:2...)", str)
+        @test occursin("MethodError: no method matching ==(::$Int, ::$Int, ::$Int)", str)
     end
 end
 
-# Test printing of a TestSetException
-let tse_str = sprint(show, Test.TestSetException(1, 2, 3, 4, Vector{Union{Test.Error, Test.Fail}}()))
-    @test contains(tse_str, "1 passed")
-    @test contains(tse_str, "2 failed")
-    @test contains(tse_str, "3 errored")
-    @test contains(tse_str, "4 broken")
+@testset "printing of a TestSetException" begin
+    tse_str = sprint(show, Test.TestSetException(1, 2, 3, 4, Vector{Union{Test.Error, Test.Fail}}()))
+    @test occursin("1 passed", tse_str)
+    @test occursin("2 failed", tse_str)
+    @test occursin("3 errored", tse_str)
+    @test occursin("4 broken", tse_str)
 end
 
 @test Test.finish(Test.FallbackTestSet()) !== nothing
 
-OLD_STDOUT = STDOUT
-OLD_STDERR = STDERR
+OLD_STDOUT = stdout
+OLD_STDERR = stderr
 catch_out = IOStream("")
 catch_err = IOStream("")
 rde, wre = redirect_stderr()
@@ -280,10 +286,9 @@ end
                     @test S(1) == T(1)
                 end
             end
-            srand(123)
             @testset "some loops fail" begin
                 @testset for i in 1:5
-                    @test i <= rand(1:10)
+                    @test i <= 4
                 end
                 # should add 3 errors and 3 passing tests
                 @testset for i in 1:6
@@ -388,7 +393,7 @@ catch
 end
 @test ts isa Test.DefaultTestSet
 
-# now we're done running tests with DefaultTestSet so we can go back to STDOUT
+# now we're done running tests with DefaultTestSet so we can go back to stdout
 redirect_stdout(OLD_STDOUT)
 redirect_stderr(OLD_STDERR)
 
@@ -503,13 +508,13 @@ end
 @test @inferred inferred_test_function()
 @test inferred_test_global == 1
 
-# Test that @inferred works with A[i] expressions
-@test @inferred((1:3)[2]) == 2
 struct SillyArray <: AbstractArray{Float64,1} end
 Base.getindex(a::SillyArray, i) = rand() > 0.5 ? 0 : false
-test_result = @test_throws ErrorException @inferred(SillyArray()[2])
-@test contains(test_result.value.msg, "Bool")
-
+@testset "@inferred works with A[i] expressions" begin
+    @test @inferred((1:3)[2]) == 2
+    test_result = @test_throws ErrorException @inferred(SillyArray()[2])
+    @test occursin("Bool", test_result.value.msg)
+end
 # Issue #14928
 # Make sure abstract error type works.
 @test_throws Exception error("")
@@ -525,7 +530,7 @@ end
 @test @inferred(inferrable_kwtest(1)) == 2
 @test @inferred(inferrable_kwtest(1; y=1)) == 2
 @test @inferred(uninferrable_kwtest(1)) == 3
-@test_throws ErrorException @inferred(uninferrable_kwtest(1; y=2)) == 2
+@test @inferred(uninferrable_kwtest(1; y=2)) == 4
 
 @test_throws ErrorException @testset "$(error())" for i in 1:10
 end
@@ -533,69 +538,307 @@ end
 end
 
 @testset "backtraces in test errors" begin
-    let io = IOBuffer()
-        # calls backtrace() from inside @test
-        @test (print(io, Test.Error(:test_error, "woot", 5, backtrace())); 1) == 1
-        let str = String(take!(io))
-            # NOTE: This test depends on the code generated by @testset getting compiled,
-            # to get good backtraces. If it fails, check the implementation of `testset_beginend`.
-            @test contains(str, "Test.jl")
-            @test_broken !contains(str, "client.jl")
-        end
+    local f = tempname()
+    write(f,
+    """
+    using Test
+    @testset begin
+        @test 1==2
+        @test_throws MethodError 1
     end
+    """)
+    local msg = read(pipeline(ignorestatus(`$(Base.julia_cmd()) --startup-file=no --color=no $f`), stderr=devnull), String)
+    # NOTE: This test depends on the code generated by @testset getting compiled,
+    # to get good backtraces. If it fails, check the implementation of `testset_beginend`.
+    @test !occursin("do_test(", msg)
+    @test !occursin("include(", msg)
+    @test occursin("at " * f * ":3", msg)
+    @test occursin("at " * f * ":4", msg)
+    rm(f; force=true)
 end
 
 let io = IOBuffer()
     exc = Test.TestSetException(1,2,3,4,Vector{Union{Test.Error, Test.Fail}}())
     Base.showerror(io, exc, backtrace())
-    @test !contains(String(take!(io)), "backtrace()")
+    @test !occursin("backtrace()", String(take!(io)))
 end
 
-# 19750
-let io = IOBuffer()
+@testset "#19750" begin
+    io = IOBuffer()
     exc = Test.TestSetException(1,2,3,4,Vector{Union{Test.Error, Test.Fail}}())
     Base.showerror(io, exc, backtrace())
-    @test !contains(String(take!(io)), "backtrace()")
+    @test !occursin("backtrace()", String(take!(io)))
 
     exc = Test.FallbackTestSetException("msg")
     Base.showerror(io, exc, backtrace())
     str = String(take!(io))
-    @test contains(str, "msg")
-    @test !contains(str, "backtrace()")
+    @test occursin("msg", str)
+    @test !occursin("backtrace()", str)
 end
 
-msg = read(pipeline(ignorestatus(`$(Base.julia_cmd()) --startup-file=no --color=no -e '
-using Test
+let msg = read(pipeline(ignorestatus(`$(Base.julia_cmd()) --startup-file=no --color=no -e '
+        using Test
 
-foo(x) = length(x)^2
+        foo(x) = length(x)^2
 
-@testset "Foo Tests" begin
-    @testset "Animals" begin
-        @testset "Felines" begin
-            @test foo("cat") == 9
-        end
-        @testset "Canines" begin
-            @test foo("dog") == 11
-        end
-    end
-    @testset "Arrays" begin
-        @test foo(zeros(2)) == 4
-        @test foo(ones(4)) == 15
-    end
-end'`), stderr=DevNull), String)
-
-@test contains(msg,
-"""
-Test Summary: | Pass  Fail  Total
-Foo Tests     |    2     2      4
-  Animals     |    1     1      2
-    Felines   |    1            1
-    Canines   |          1      1
-  Arrays      |    1     1      2
-""")
+        @testset "Foo Tests" begin
+            @testset "Animals" begin
+                @testset "Felines" begin
+                    @test foo("cat") == 9
+                end
+                @testset "Canines" begin
+                    @test foo("dog") == 11
+                end
+            end
+            @testset "Arrays" begin
+                @test foo(zeros(2)) == 4
+                @test foo(fill(1., 4)) == 15
+            end
+        end'`), stderr=devnull), String)
+    @test occursin("""
+        Test Summary: | Pass  Fail  Total
+        Foo Tests     |    2     2      4
+          Animals     |    1     1      2
+            Felines   |    1            1
+            Canines   |          1      1
+          Arrays      |    1     1      2
+        """, msg)
+end
 
 # 20489
-msg = split(read(pipeline(ignorestatus(`$(Base.julia_cmd()) --startup-file=no --color=no -e '
-Test.print_test_results(Test.DefaultTestSet(""))'`), stderr=DevNull), String), "\n")[1]
+let msg = split(read(pipeline(ignorestatus(`$(Base.julia_cmd()) --startup-file=no --color=no -e '
+        Test.print_test_results(Test.DefaultTestSet(""))'`), stderr=devnull), String), "\n")[1]
+    @test msg == rstrip(msg)
+end
 
-@test msg == rstrip(msg)
+@testset "test guarded srand" begin
+    seed = rand(UInt)
+    orig = copy(Random.GLOBAL_RNG)
+    @test guardsrand(()->rand(), seed) == guardsrand(()->rand(), seed)
+    @test guardsrand(()->rand(Int), seed) == guardsrand(()->rand(Int), seed)
+    r1, r2 = MersenneTwister(0), MersenneTwister(0)
+    a, b = guardsrand(r1) do
+        srand(r1, 0)
+        rand(r1), rand(r1, Int)
+    end::Tuple{Float64,Int}
+    c, d = guardsrand(r2) do
+        srand(r2, 0)
+        rand(r2), rand(r2, Int)
+    end::Tuple{Float64,Int}
+    @test a == c == rand(r1) == rand(r2)
+    @test b == d == rand(r1, Int) == rand(r2, Int)
+    @test orig == Random.GLOBAL_RNG
+    @test rand(orig) == rand()
+end
+
+@testset "file info in test errors" begin
+    local f = tempname()
+
+    write(f,
+    """
+    using Test
+    @testset begin
+        @test 1==2
+        @test_throws UndefVarError 1
+        @test_broken 1 == 1
+    end
+    """)
+
+    local msg = read(pipeline(ignorestatus(`$(Base.julia_cmd()) --startup-file=no --color=no $f`), stderr=devnull), String)
+    @test occursin("at " * f * ":" * "3", msg)
+    @test occursin("at " * f * ":" * "4", msg)
+    @test occursin("at " * f * ":" * "5", msg)
+
+    rm(f; force=true)
+end
+
+# issue #24919
+@testset "≈ with atol" begin
+    local cmd = `$(Base.julia_cmd()) --startup-file=no --color=no`
+    f(src) = read(pipeline(ignorestatus(`$cmd -e $src`), stderr=devnull), String)
+
+    msg = f("""
+    using Test
+    x, y = 0.9, 0.1
+    @test x ≈ y atol=0.01
+    """)
+    @test occursin("Evaluated: 0.9 ≈ 0.1 (atol=0.01)", msg)
+
+    msg = f("""
+    using Test
+    x, y = 0.9, 0.1
+    @test x ≈ y nans=true atol=0.01
+    """)
+    @test occursin("Evaluated: 0.9 ≈ 0.1 (nans=true, atol=0.01)", msg)
+end
+
+@testset "@test_logs" begin
+    function foo(n)
+        @info "Doing foo with n=$n"
+        for i=1:n
+            @debug "Iteration $i"
+        end
+    end
+
+    @test_logs (Info,"Doing foo with n=2") foo(2)
+
+    # Log pattern matching
+    # Regex
+    @test_logs (Info,r"^Doing foo with n=[0-9]+$") foo(10)
+    @test_logs (Info,r"^Doing foo with n=[0-9]+$") foo(1)
+    # Level symbols
+    @test_logs (:debug,) min_level=Debug @debug "foo"
+    @test_logs (:info,)  @info  "foo"
+    @test_logs (:warn,)  @warn  "foo"
+    @test_logs (:error,) @error "foo"
+
+    # Pass through so the value of the expression can also be tested
+    @test (@test_logs (Info,"blah") (@info "blah"; 42)) == 42
+
+    # Debug level log collection
+    @test_logs (Info,"Doing foo with n=2") (Debug,"Iteration 1") (Debug,"Iteration 2") min_level=Debug foo(2)
+
+    @test_logs (Debug,"Iteration 5") min_level=Debug match_mode=:any foo(10)
+
+    # Test failures
+    fails = @testset NoThrowTestSet "check that @test_logs detects bad input" begin
+        @test_logs (Warn,) foo(1)
+        @test_logs (Warn,) match_mode=:any @info "foo"
+        @test_logs (Debug,) @debug "foo"
+    end
+    @test length(fails) == 3
+    @test fails[1] isa Test.LogTestFailure
+    @test fails[2] isa Test.LogTestFailure
+    @test fails[3] isa Test.LogTestFailure
+end
+
+function newfunc()
+    42
+end
+@deprecate oldfunc newfunc
+
+@testset "@test_deprecated" begin
+    @test_deprecated oldfunc()
+
+    # Expression passthrough
+    if Base.JLOptions().depwarn != 2
+        @test (@test_deprecated oldfunc()) == 42
+
+        fails = @testset NoThrowTestSet "check that @test_deprecated detects bad input" begin
+            @test_deprecated newfunc()
+            @test_deprecated r"Not found in message" oldfunc()
+        end
+        @test length(fails) == 2
+        @test fails[1] isa Test.LogTestFailure
+        @test fails[2] isa Test.LogTestFailure
+    else
+        @warn """Omitting `@test_deprecated` tests which can't yet
+                 be tested in --depwarn=error mode"""
+    end
+end
+
+@testset "@testset preserves GLOBAL_RNG's state, and re-seeds it" begin
+    # i.e. it behaves as if it was wrapped in a `guardsrand(GLOBAL_RNG.seed)` block
+    seed = rand(UInt128)
+    srand(seed)
+    a = rand()
+    @testset begin
+        # global RNG must re-seeded at the beginning of @testset
+        @test a == rand()
+    end
+    @testset for i=1:3
+        @test a == rand()
+    end
+    # the @testset's above must have no consequence for rand() below
+    b = rand()
+    srand(seed)
+    @test a == rand()
+    @test b == rand()
+end
+
+@testset "InterruptExceptions #21043" begin
+    @test_throws InterruptException (@test 1 == throw(InterruptException()))
+
+    @testset begin
+        @test_throws InterruptException throw(InterruptException())
+    end
+
+    f = tempname()
+
+    write(f,
+    """
+    using Test
+    @testset begin
+        try
+            @test_throws ErrorException throw(InterruptException())
+        catch e
+            @test e isa InterruptException
+        end
+    end
+
+    try
+        @testset begin
+            @test 1 == 1
+            throw(InterruptException())
+        end
+    catch e
+        @test e isa InterruptException
+    end
+
+    try
+        @testset for i in 1:1
+            @test 1 == 1
+            throw(InterruptException())
+        end
+    catch e
+        @test e isa InterruptException
+    end
+    """)
+    msg = success(pipeline(ignorestatus(`$(Base.julia_cmd()) --startup-file=no --color=no $f`), stderr=devnull))
+end
+
+@testset "non AbstractTestSet as testset" begin
+    local f, err = tempname(), tempname()
+    write(f,
+    """
+    using Test
+    desc = "description"
+    @testset desc begin
+        @test 1==1
+    end
+    """)
+    run(pipeline(ignorestatus(`$(Base.julia_cmd()) --startup-file=no --color=no $f`), stderr=err))
+    msg = read(err, String)
+    @test occursin("Expected `desc` to be an AbstractTestSet, it is a String", msg)
+    rm(f; force=true)
+end
+
+f25835(;x=nothing) = _f25835(x)
+_f25835(::Nothing) = ()
+_f25835(x) = (x,)
+# A keyword function that is never type stable
+g25835(;x=1) = rand(Bool) ? 1.0 : 1
+# A keyword function that is sometimes type stable
+h25835(;x=1,y=1) = x isa Int ? x*y : (rand(Bool) ? 1.0 : 1)
+@testset "keywords in @inferred" begin
+    @test @inferred(f25835()) == ()
+    @test @inferred(f25835(x=nothing)) == ()
+    @test @inferred(f25835(x=1)) == (1,)
+
+    # A global argument should make this uninferrable
+    global y25835 = 1
+    @test f25835(x=y25835) == (1,)
+    @test_throws ErrorException @inferred((()->f25835(x=y25835))()) == (1,)
+
+    @test_throws ErrorException @inferred(g25835()) == 1
+    @test_throws ErrorException @inferred(g25835(x=1)) == 1
+
+    @test @inferred(h25835()) == 1
+    @test @inferred(h25835(x=2,y=3)) == 6
+    @test_throws ErrorException @inferred(h25835(x=1.0,y=1.0)) == 1
+end
+
+@testset "splatting in isapprox" begin
+    a = [1, 2, 3]
+    @test isapprox(identity.((a, a))...)
+end
